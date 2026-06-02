@@ -5,6 +5,8 @@ from __future__ import annotations
 import statistics
 from typing import Any
 
+from pdf_converter.extraction.underline import attach_underlines_from_strokes
+
 
 def _word_bbox(word: dict) -> tuple[float, float, float, float]:
     return (
@@ -70,5 +72,7 @@ def extract_words_styled(
         from pdf_converter.extraction.links import attach_hyperlinks_to_words
 
         words = attach_hyperlinks_to_words(words, hyperlinks)
+
+    words = attach_underlines_from_strokes(page, words)
 
     return words

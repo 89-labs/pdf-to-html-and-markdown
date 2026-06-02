@@ -6,9 +6,10 @@ from pdf_converter.rendering.rich_text import block_inline_html, spans_to_html, 
 
 
 def test_style_from_fontname_bold_italic():
-    assert style_from_fontname("Arial-Bold") == (True, False, False)
-    assert style_from_fontname("TimesNewRoman-Italic") == (False, True, False)
-    assert style_from_fontname("Courier") == (False, False, True)
+    assert style_from_fontname("Arial-Bold") == (True, False, False, False)
+    assert style_from_fontname("TimesNewRoman-Italic") == (False, True, False, False)
+    assert style_from_fontname("Courier") == (False, False, True, False)
+    assert style_from_fontname("Arial-BoldUnderline") == (True, False, False, True)
 
 
 def test_spans_from_words_merges_runs():
@@ -35,6 +36,15 @@ def test_spans_to_html_bold_and_link():
 def test_spans_to_markdown():
     spans = [TextSpan(text="Title", bold=True)]
     assert spans_to_markdown(spans) == "**Title**"
+
+
+def test_spans_to_html_and_markdown_underline():
+    spans = [TextSpan(text="Portfolio", underline=True, link="https://example.com")]
+    assert "<u>Portfolio</u>" in spans_to_html(spans)
+    assert 'href="https://example.com"' in spans_to_html(spans)
+    md = spans_to_markdown(spans)
+    assert "<u>Portfolio</u>" in md
+    assert "https://example.com" in md
 
 
 def test_block_inline_html_uses_spans():

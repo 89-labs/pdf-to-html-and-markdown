@@ -10,6 +10,7 @@ from pdf_converter.models import TextSpan
 
 _BOLD_RE = re.compile(r"bold|black|heavy|semibold|demi", re.I)
 _ITALIC_RE = re.compile(r"italic|oblique", re.I)
+_UNDERLINE_RE = re.compile(r"underline", re.I)
 _MONO_RE = re.compile(r"mono|courier|consolas|menlo|code|typewriter", re.I)
 _SMALL_SIZE_RATIO = 0.82
 _SUPERSCRIPT_RATIO = 0.75
@@ -55,12 +56,13 @@ def _is_highlight_bg(color: Any) -> bool:
     return r > 200 and g > 200 and b < 180
 
 
-def style_from_fontname(fontname: str) -> tuple[bool, bool, bool]:
+def style_from_fontname(fontname: str) -> tuple[bool, bool, bool, bool]:
     fn = fontname or ""
     bold = bool(_BOLD_RE.search(fn))
     italic = bool(_ITALIC_RE.search(fn))
     code = bool(_MONO_RE.search(fn))
-    return bold, italic, code
+    underline = bool(_UNDERLINE_RE.search(fn))
+    return bold, italic, code, underline
 
 
 def word_style(
@@ -71,7 +73,8 @@ def word_style(
 ) -> WordStyle:
     fontname = word.get("fontname") or ""
     size = float(word.get("size") or line_median_size or 12)
-    bold, italic, code = style_from_fontname(fontname)
+    bold, italic, code, font_underline = style_from_fontname(fontname)
+    underline = bool(word.get("underline")) or font_underline
 
     top = float(word.get("top", 0))
     y_offset = line_baseline_top - top
@@ -89,6 +92,7 @@ def word_style(
         bold=bold,
         italic=italic,
         code=code,
+        underline=underline,
         superscript=superscript,
         subscript=subscript,
         small=small,

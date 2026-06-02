@@ -71,6 +71,8 @@ def spans_to_markdown(spans: list[TextSpan]) -> str:
                 core = f"**{core}**"
             elif span.italic:
                 core = f"*{core}*"
+            if span.underline:
+                core = f"<u>{core}</u>"
             if span.strikethrough:
                 core = f"~~{core}~~"
             if span.link:
