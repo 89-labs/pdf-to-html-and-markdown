@@ -171,3 +171,40 @@ def is_multi_column_page(
     columns = split_words_by_columns(words, page_width)
     substantial = [c for c in columns if len(c) >= min_words_per_col]
     return len(substantial) >= min_columns
+
+
+def split_words_by_page_regions(
+    words: list[dict],
+    page_width: float,
+    n_columns: int,
+    *,
+    min_words_per_col: int = 15,
+) -> list[list[dict]]:
+    """Split words into N equal vertical regions (for 3-column index pages)."""
+    if n_columns <= 1 or not words:
+        return [words]
+
+    boundaries = [page_width * i / n_columns for i in range(1, n_columns)]
+    columns: list[list[dict]] = [[] for _ in range(n_columns)]
+    for w in words:
+        cx = (w.get("x0", 0) + w.get("x1", 0)) / 2
+        col = 0
+        while col < len(boundaries) and cx >= boundaries[col]:
+            col += 1
+        columns[col].append(w)
+
+    substantial = [c for c in columns if len(c) >= min_words_per_col]
+    return substantial if len(substantial) >= 2 else [words]
+
+
+def count_substantial_thirds(
+    words: list[dict],
+    page_width: float,
+    *,
+    min_words: int = 40,
+) -> int:
+    """How many page-thirds have enough words to be real columns."""
+    thirds = split_words_by_page_regions(
+        words, page_width, 3, min_words_per_col=min_words
+    )
+    return len(thirds)

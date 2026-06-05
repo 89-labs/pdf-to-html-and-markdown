@@ -21,6 +21,16 @@ def heading_markdown_prefix(role: str) -> str:
     return _HEADING_PREFIX.get(role, "## ")
 
 
+def page_column_indices(page: PageContent) -> list[int]:
+    """Sorted column indices when multi-column layout was detected."""
+    cols = {
+        b.meta.get("column")
+        for b in page.text_blocks
+        if isinstance(getattr(b, "meta", None), dict) and b.meta.get("column") is not None
+    }
+    return sorted(c for c in cols if c is not None)
+
+
 def iter_render_segments(
     pages: list[PageContent],
     *,
@@ -59,6 +69,10 @@ def iter_render_segments(
                 continue
 
             yield from flush_list()
+
+            if role in ("toc_item", "toc_chapter"):
+                yield (role, block)
+                continue
 
             if role in _HEADING_PREFIX:
                 yield ("heading", block)

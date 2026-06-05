@@ -83,6 +83,12 @@ def is_valid_table(
     if rows < 2 or cols < 2:
         return False
 
+    if allow_text_inferred and not page_has_ruling_lines(page):
+        # Text-inferred tables are higher-risk; require a minimum shape so we
+        # don't turn dense prose/indices into "tables".
+        if rows < 4 or cols < 3:
+            return False
+
     if not allow_text_inferred and not page_has_ruling_lines(page):
         return False
 
@@ -91,7 +97,11 @@ def is_valid_table(
         if _bbox_area(bbox) / page_area > 0.85 and cols >= 5:
             return False
 
-    if cols >= 6 and _median_cell_length(table) < 12:
+    if (
+        not allow_text_inferred
+        and cols >= 6
+        and _median_cell_length(table) < 12
+    ):
         return False
 
     non_empty = sum(
@@ -117,12 +127,23 @@ def filter_tables(
     kept_bboxes: list[tuple[float, float, float, float]] = []
 
     body_norm = body_text.lower()
+    # Text-inferred tables can legitimately have very similar content to
+    # the surrounding "body text" (because extraction can consider the
+    # same words in both places). When there are no ruling lines, we
+    # intentionally allow higher similarity so we still keep table output
+    # and mask table words from paragraphs.
+    high_similarity_threshold = 0.9
+    use_similarity_threshold = (
+        high_similarity_threshold
+        if allow_text_inferred and not page_has_ruling_lines(page)
+        else similarity_threshold
+    )
     for idx, table in enumerate(tables):
         bbox = bboxes[idx] if idx < len(bboxes) else None
         if not is_valid_table(table, bbox, page, allow_text_inferred=allow_text_inferred):
             continue
         flat = _table_flat_text(table)
-        if body_norm and text_similarity(flat, body_text) >= similarity_threshold:
+        if body_norm and text_similarity(flat, body_text) >= use_similarity_threshold:
             continue
         kept_tables.append(table)
         if bbox:

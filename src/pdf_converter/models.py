@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 
-PIPELINE_VERSION = "1.4.1"
+PIPELINE_VERSION = "1.5.1"
 ENGINE_PDFPLUMBER = "pdfplumber"
 ENGINE_MARKER = "marker"
 

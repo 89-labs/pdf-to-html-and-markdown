@@ -7,6 +7,7 @@ import re
 from io import BytesIO
 
 from pdf_converter.extraction.columns import detect_column_x0_peaks
+from pdf_converter.extraction.page_layout import page_text_hint, should_use_text_inferred_tables
 from pdf_converter.extraction.word_enrich import extract_words_styled
 from pdf_converter.extraction.layout_structure import extract_blocks_from_layout
 from pdf_converter.extraction.page_cleanup import filter_words_furniture
@@ -16,7 +17,17 @@ from pdf_converter.text_utils import detect_role, sanitise_text, split_merged_bl
 
 log = logging.getLogger(__name__)
 
-TABLE_OVERLAP_THRESHOLD = 0.25
+TABLE_OVERLAP_THRESHOLD = 0.15
+
+
+def _expand_bbox(
+    bbox: tuple[float, float, float, float],
+    *,
+    pad: float = 8.0,
+) -> tuple[float, float, float, float]:
+    """Expand a bbox slightly to avoid leaving edge fragments behind."""
+    x0, top, x1, bottom = bbox
+    return (x0 - pad, top - pad, x1 + pad, bottom + pad)
 
 
 def _bbox_overlap_ratio(
@@ -267,12 +278,6 @@ def extract_native_page(
     raw_lines = plumber_page.extract_text(layout=True) or ""
     raw_text = sanitise_text(raw_lines)
 
-    extracted, table_bboxes = _extract_tables(
-        plumber_page,
-        prose_mode=prose_mode,
-        allow_text_tables=allow_text_tables,
-    )
-
     hyperlinks: list = []
     try:
         hyperlinks = plumber_page.hyperlinks or []
@@ -285,6 +290,19 @@ def extract_native_page(
         hyperlinks=hyperlinks,
     )
 
+    layout_hint = page_text_hint(plumber_page, words)
+    effective_allow_text_tables = should_use_text_inferred_tables(
+        book_mode=book_mode,
+        allow_text_tables=allow_text_tables,
+        raw_text=layout_hint or raw_text,
+    )
+
+    extracted, table_bboxes = _extract_tables(
+        plumber_page,
+        prose_mode=prose_mode,
+        allow_text_tables=effective_allow_text_tables,
+    )
+
     if book_mode and running_texts:
         words = filter_words_furniture(words, running_texts)
 
@@ -294,8 +312,11 @@ def extract_native_page(
         table_bboxes,
         pre_body,
         plumber_page,
-        allow_text_inferred=allow_text_tables,
+        allow_text_inferred=effective_allow_text_tables,
     )
+
+    if table_bboxes:
+        table_bboxes = [_expand_bbox(tb) for tb in table_bboxes]
 
     words = [
         w
@@ -323,7 +344,7 @@ def extract_native_page(
         table_bboxes,
         body_text,
         plumber_page,
-        allow_text_inferred=allow_text_tables,
+        allow_text_inferred=effective_allow_text_tables,
     )
 
     images = _extract_page_images(plumber_page, page_num, book_mode=book_mode)

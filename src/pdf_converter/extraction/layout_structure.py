@@ -7,10 +7,17 @@ import statistics
 from typing import Any, Optional
 
 from pdf_converter.extraction.columns import (
-    detect_column_x0_peaks,
+    count_substantial_thirds,
     is_multi_column_page,
     split_two_column_body,
     split_words_by_columns,
+    split_words_by_page_regions,
+)
+from pdf_converter.extraction.page_layout import (
+    is_factor_sheet_page,
+    is_index_page,
+    is_photo_credits_page,
+    page_text_hint,
 )
 from pdf_converter.extraction.toc import extract_toc_blocks, is_toc_page
 from pdf_converter.extraction.styling import plain_text_from_spans, spans_from_words
@@ -95,6 +102,10 @@ def _is_continuation(prev: dict, curr: dict) -> bool:
     pt, ct = prev["text"].strip(), curr["text"].strip()
     if not ct:
         return False
+    # Table-like rows (e.g. "1 m = 100 cm = ...") should not be merged
+    # into a single long paragraph; keep them as separate lines/blocks.
+    if "=" in pt and "=" in ct:
+        return False
     if _BULLET_START.match(ct) or _ORDERED_START.match(ct) or _SUB_BULLET.match(ct):
         return False
     if re.match(r"^\[[\sXx]?\]", ct):
@@ -118,6 +129,10 @@ def _is_continuation(prev: dict, curr: dict) -> bool:
             return False
     if pt.endswith(":") and re.match(r"^[A-Z][A-Za-z /&\-]+\.", ct):
         return False
+    if re.search(r";\s*$", pt) and re.match(r"^Chapter\s+\d+", ct, re.I):
+        return False
+    if re.search(r",\s*\d", pt) and re.match(r"^[A-Z]", ct):
+        return False
     if re.match(r'^(Date|Effective|Provider|Client)\b', ct, re.I):
         return True
     if "(" in pt and ")" not in pt:
@@ -136,6 +151,9 @@ def _is_continuation(prev: dict, curr: dict) -> bool:
 def _should_join_paragraphs(prev_text: str, next_text: str) -> bool:
     pt, nt = prev_text.strip(), next_text.strip()
     if not pt or not nt:
+        return False
+    # Avoid joining adjacent table-like rows.
+    if "=" in pt and "=" in nt:
         return False
     if pt.count("(") > pt.count(")"):
         return True
@@ -437,6 +455,79 @@ def _split_section_headings(blocks: list[TextBlock]) -> list[TextBlock]:
     return out
 
 
+_REFERENCE_LABELS = frozenset(
+    {
+        "Length",
+        "Area",
+        "Volume",
+        "Time",
+        "Angle",
+        "Speed",
+        "Acceleration",
+        "Mass",
+        "Force",
+        "Pressure",
+        "Energy",
+        "Power",
+        "Mass–Energy Equivalence",
+        "Mass-Energy Equivalence",
+    }
+)
+
+_INDEX_HEADER_RE = re.compile(r"^(?:Index|I-\d+)$", re.I)
+
+
+def _role_for_dense_line(text: str, font_size: float, avg_font: float) -> str:
+    stripped = text.strip()
+    if not stripped:
+        return "blank"
+    if stripped in _REFERENCE_LABELS:
+        return "h3"
+    if _INDEX_HEADER_RE.match(stripped):
+        return "h3"
+    if len(stripped) <= 2 and stripped.isalpha() and stripped.isupper():
+        return "h3"
+    return _classify_paragraph(stripped, font_size, avg_font)
+
+
+def _extract_line_blocks(
+    words: list[dict],
+    *,
+    page_index: int,
+    is_document_start: bool,
+) -> list[TextBlock]:
+    """One block per visual line (factor sheets, dense reference pages)."""
+    font_sizes = [float(w["size"]) for w in words if w.get("size")]
+    avg_font = statistics.mean(font_sizes) if font_sizes else 12.0
+    lines = _group_words_into_lines(words)
+    blocks: list[TextBlock] = []
+    for i, line in enumerate(lines):
+        text = sanitise_text(line["text"]).strip()
+        if not text:
+            continue
+        role = _role_for_dense_line(text, line["size"], avg_font)
+        if i == 0 and is_document_start and role == "paragraph":
+            role = _classify_paragraph(text, line["size"], avg_font, is_first=True)
+        blk = _build_text_block(
+            text, role, line.get("words"), font_size=line["size"]
+        )
+        if blk:
+            blocks.append(blk)
+    return blocks
+
+
+def _extract_index_column_words(
+    words: list[dict],
+    *,
+    page_index: int,
+    is_document_start: bool,
+) -> list[TextBlock]:
+    """Index column: preserve one entry per line, minimal merging."""
+    return _extract_line_blocks(
+        words, page_index=page_index, is_document_start=is_document_start
+    )
+
+
 def _extract_column_words(
     words: list[dict],
     *,
@@ -482,40 +573,53 @@ def extract_blocks_from_layout(
         ]
 
     if book_mode and is_toc_page(page, words):
-        return extract_toc_blocks(page)
+        toc_blocks = extract_toc_blocks(page)
+        if toc_blocks:
+            return toc_blocks
 
     page_width = float(getattr(page, "width", 0) or 612)
+    raw_layout = page_text_hint(page, words)
+    index_page = is_index_page(raw_layout)
+    factor_page = is_factor_sheet_page(raw_layout)
+    photo_page = is_photo_credits_page(raw_layout)
 
-    if book_mode and is_multi_column_page(words, page_width, min_words_per_col=80):
+    use_multi = book_mode or is_multi_column_page(
+        words, page_width, min_words_per_col=60
+    )
+
+    if use_multi and (
+        index_page
+        or factor_page
+        or photo_page
+        or is_multi_column_page(words, page_width, min_words_per_col=50)
+    ):
         all_blocks: list[TextBlock] = []
-        columns = split_two_column_body(words, page_width)
-        if columns is None:
-            columns = split_words_by_columns(words, page_width)
+        if index_page and count_substantial_thirds(words, page_width) >= 3:
+            columns = split_words_by_page_regions(words, page_width, 3)
+            extract_fn = _extract_index_column_words
+        else:
+            columns = split_two_column_body(words, page_width)
+            if columns is None:
+                columns = split_words_by_columns(
+                    words, page_width, min_words_per_col=25
+                )
+            if factor_page or index_page:
+                extract_fn = _extract_line_blocks if factor_page else _extract_index_column_words
+            else:
+                extract_fn = _extract_column_words
+
         for col_idx, col_words in enumerate(columns):
             if len(col_words) < 15:
                 continue
-            col_blocks = _extract_column_words(
+            col_blocks = extract_fn(
                 col_words,
                 page_index=page_index,
                 is_document_start=(page_index == 0 and col_idx == 0),
             )
             if not col_blocks:
                 continue
-            if col_idx > 0:
-                lead = col_blocks[0]
-                if lead.role == "paragraph" and len(lead.text) < 80:
-                    lead.role = "h3"
-                elif lead.role in ("h2", "h3"):
-                    pass
-                else:
-                    all_blocks.append(
-                        TextBlock(
-                            text=f"Section {col_idx + 1}",
-                            role="h3",
-                            bbox=None,
-                            font_size=12.0,
-                        )
-                    )
+            for b in col_blocks:
+                b.meta["column"] = col_idx
             all_blocks.extend(col_blocks)
         return _split_section_headings(all_blocks)
 

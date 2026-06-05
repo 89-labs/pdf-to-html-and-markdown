@@ -7,7 +7,7 @@ import html
 import re
 
 from pdf_converter.models import PageContent, TextBlock
-from pdf_converter.rendering.document import iter_render_segments
+from pdf_converter.rendering.document import iter_render_segments, page_column_indices
 from pdf_converter.rendering.rich_text import block_inline_html
 
 
@@ -136,6 +136,53 @@ HTML_TEMPLATE = """\
       padding-left: .8em;
       margin: .4em 0;
     }}
+    .two-col {{
+      display: flex;
+      gap: 40px;
+      align-items: flex-start;
+    }}
+    .two-col .col, .three-col .col {{
+      flex: 1;
+      min-width: 0;
+    }}
+    .three-col {{
+      display: flex;
+      gap: 24px;
+      align-items: flex-start;
+      font-size: 0.92em;
+    }}
+    .toc-page {{
+      font-family: 'Helvetica Neue', Arial, sans-serif;
+      max-width: 640px;
+    }}
+    .toc-page h2 {{
+      text-align: center;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      border-bottom: none;
+      margin-bottom: 1.2em;
+    }}
+    .toc-entry, .toc-chapter {{
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 1.5em;
+      margin: 0.28em 0;
+      line-height: 1.45;
+    }}
+    .toc-chapter {{
+      font-weight: 700;
+      text-transform: uppercase;
+      margin-top: 0.9em;
+      margin-bottom: 0.35em;
+      font-size: 0.95em;
+    }}
+    .toc-item {{
+      padding-left: 1.25em;
+      font-size: 0.92em;
+    }}
+    .toc-title {{ flex: 1; min-width: 0; }}
+    .toc-page-num {{ flex-shrink: 0; font-variant-numeric: tabular-nums; }}
   </style>
 </head>
 <body>
@@ -150,6 +197,24 @@ def _heading_html(block: TextBlock) -> str:
     tag = level if level in ("h1", "h2", "h3", "h4", "h5", "h6") else "h2"
     inner = block_inline_html(block)
     return f"<{tag}>{inner}</{tag}>"
+
+
+def _toc_chapter_html(block: TextBlock) -> str:
+    page = block.meta.get("page", "")
+    title = block_inline_html(block) if block.spans else html.escape(block.text)
+    page_html = (
+        f'<span class="toc-page-num">{html.escape(str(page))}</span>' if page else ""
+    )
+    return f'<div class="toc-chapter"><span class="toc-title">{title}</span>{page_html}</div>'
+
+
+def _toc_item_html(block: TextBlock) -> str:
+    page = block.meta.get("page", "")
+    title = block_inline_html(block) if block.spans else html.escape(block.text)
+    page_html = (
+        f'<span class="toc-page-num">{html.escape(str(page))}</span>' if page else ""
+    )
+    return f'<div class="toc-item"><span class="toc-title">{title}</span>{page_html}</div>'
 
 
 def _list_item_html(block: TextBlock) -> str:
@@ -167,6 +232,43 @@ def _list_group_html(blocks: list[TextBlock]) -> str:
     items = "".join(_list_item_html(b) for b in blocks)
     tag = "ol" if ordered else "ul"
     return f"<{tag}>{items}</{tag}>"
+
+
+def _append_segment_html(
+    body_parts: list[str],
+    kind: str,
+    payload: object,
+) -> None:
+    if kind == "heading" and isinstance(payload, TextBlock):
+        body_parts.append(_heading_html(payload))
+    elif kind == "toc_chapter" and isinstance(payload, TextBlock):
+        body_parts.append(_toc_chapter_html(payload))
+    elif kind == "toc_item" and isinstance(payload, TextBlock):
+        body_parts.append(_toc_item_html(payload))
+    elif kind == "list_group" and isinstance(payload, list):
+        body_parts.append(_list_group_html(payload))
+    elif kind == "blockquote" and isinstance(payload, TextBlock):
+        body_parts.append(f"<blockquote>{block_inline_html(payload)}</blockquote>")
+    elif kind == "code_block" and isinstance(payload, TextBlock):
+        body_parts.append(f"<pre><code>{block_inline_html(payload)}</code></pre>")
+    elif kind == "footnote" and isinstance(payload, TextBlock):
+        body_parts.append(f'<p class="footnote">{block_inline_html(payload)}</p>')
+    elif kind == "caption" and isinstance(payload, TextBlock):
+        body_parts.append(f"<figcaption>{block_inline_html(payload)}</figcaption>")
+    elif kind == "hr":
+        body_parts.append("<hr>")
+    elif kind == "paragraph" and isinstance(payload, TextBlock):
+        inner = block_inline_html(payload)
+        if payload.text.startswith("*") and payload.text.endswith("*"):
+            body_parts.append(f"<p><em>{inner}</em></p>")
+        else:
+            body_parts.append(f"<p>{inner}</p>")
+    elif kind == "table" and payload is not None:
+        body_parts.append(_table_to_html(payload))
+
+
+def _page_is_toc(page: PageContent) -> bool:
+    return any(b.role in ("toc_item", "toc_chapter") for b in page.text_blocks)
 
 
 def pages_to_html(
@@ -203,31 +305,38 @@ def pages_to_html(
                     alt = html.escape(f"Scanned page {page.page_num + 1}")
                     body_parts.append(f'<img src="{src}" alt="{alt}">')
 
-        for kind, payload in iter_render_segments([page], page_breaks=False):
-            if kind == "heading" and isinstance(payload, TextBlock):
-                body_parts.append(_heading_html(payload))
-            elif kind == "list_group" and isinstance(payload, list):
-                body_parts.append(_list_group_html(payload))
-            elif kind == "blockquote" and isinstance(payload, TextBlock):
-                body_parts.append(f"<blockquote>{block_inline_html(payload)}</blockquote>")
-            elif kind == "code_block" and isinstance(payload, TextBlock):
-                body_parts.append(f"<pre><code>{block_inline_html(payload)}</code></pre>")
-            elif kind == "footnote" and isinstance(payload, TextBlock):
-                body_parts.append(
-                    f'<p class="footnote">{block_inline_html(payload)}</p>'
+        columns = page_column_indices(page)
+        toc_page = _page_is_toc(page)
+        if toc_page:
+            body_parts.append('<div class="toc-page">')
+
+        # Preserve real HTML tables. For multi-column text (index, credits),
+        # render side-by-side using flex containers.
+        if len(columns) >= 2 and not page.tables:
+            layout_class = "three-col" if len(columns) >= 3 else "two-col"
+            body_parts.append(f'<div class="{layout_class}">')
+            for col in columns[:3]:
+                col_blocks = [b for b in page.text_blocks if b.meta.get("column") == col]
+                col_page = PageContent(
+                    page_num=page.page_num,
+                    mode=page.mode,
+                    text_blocks=col_blocks,
+                    tables=[],
+                    images=[],
+                    raw_text=page.raw_text,
+                    stats=page.stats,
                 )
-            elif kind == "caption" and isinstance(payload, TextBlock):
-                body_parts.append(f"<figcaption>{block_inline_html(payload)}</figcaption>")
-            elif kind == "hr":
-                body_parts.append("<hr>")
-            elif kind == "paragraph" and isinstance(payload, TextBlock):
-                inner = block_inline_html(payload)
-                if payload.text.startswith("*") and payload.text.endswith("*"):
-                    body_parts.append(f"<p><em>{inner}</em></p>")
-                else:
-                    body_parts.append(f"<p>{inner}</p>")
-            elif kind == "table" and payload is not None:
-                body_parts.append(_table_to_html(payload))
+                body_parts.append('<div class="col">')
+                for kind, payload in iter_render_segments([col_page], page_breaks=False):
+                    _append_segment_html(body_parts, kind, payload)
+                body_parts.append("</div>")
+            body_parts.append("</div>")
+        else:
+            for kind, payload in iter_render_segments([page], page_breaks=False):
+                _append_segment_html(body_parts, kind, payload)
+
+        if toc_page:
+            body_parts.append("</div>")
 
         for img in page.images:
             if img.is_full_page:
